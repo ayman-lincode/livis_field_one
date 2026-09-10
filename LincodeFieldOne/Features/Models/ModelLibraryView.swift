@@ -5,8 +5,19 @@ import UniformTypeIdentifiers
 struct ModelLibraryView: View {
     @Environment(ModelStore.self) private var store
 
-    @State private var showsModelImporter = false
-    @State private var labelTargetID: UUID?
+    /// What the file picker is currently open for.
+    ///
+    /// SwiftUI will only honour one `.fileImporter` per view: stacking a second
+    /// one leaves the inner importer's binding flipping to `true` and nothing
+    /// ever presenting. So both flows share a single importer and this says
+    /// which of them asked for it.
+    private enum ImportKind {
+        case model
+        case labels(UUID)
+    }
+
+    @State private var importKind: ImportKind?
+    @State private var showsImporter = false
     @State private var importError: String?
     @State private var inspecting: StoredModel?
 
@@ -22,7 +33,7 @@ struct ModelLibraryView: View {
                     size: .medium,
                     fullWidth: false,
                     isBusy: store.isImporting
-                ) { showsModelImporter = true }
+                ) { beginImport(.model) }
             }
 
             ScrollView {
@@ -44,7 +55,7 @@ struct ModelLibraryView: View {
                                 + "Class names come from the model when it carries them, or from a "
                                 + "label file you add afterwards.",
                             actionTitle: "Import a model",
-                            action: { showsModelImporter = true }
+                            action: { beginImport(.model) }
                         )
                         .frame(maxWidth: .infinity)
                         .padding(.top, Space.s09)
@@ -56,7 +67,7 @@ struct ModelLibraryView: View {
                                     isSelected: store.selectedModelID == model.id,
                                     onSelect: { store.select(model.id) },
                                     onInspect: { inspecting = model },
-                                    onAddLabels: { labelTargetID = model.id },
+                                    onAddLabels: { beginImport(.labels(model.id)) },
                                     onDelete: { store.delete(model.id) }
                                 )
                             }
@@ -70,21 +81,20 @@ struct ModelLibraryView: View {
         }
         .background(Carbon.background)
         .fileImporter(
-            isPresented: $showsModelImporter,
-            allowedContentTypes: [.coreMLModel, .coreMLPackage, .coreMLCompiled, .package, .data],
+            isPresented: $showsImporter,
+            allowedContentTypes: allowedTypes,
             allowsMultipleSelection: false
         ) { result in
-            handleModelImport(result)
-        }
-        .fileImporter(
-            isPresented: Binding(
-                get: { labelTargetID != nil },
-                set: { if !$0 { labelTargetID = nil } }
-            ),
-            allowedContentTypes: [.plainText, .json, .yaml, .text, .data],
-            allowsMultipleSelection: false
-        ) { result in
-            handleLabelImport(result)
+            // `importKind` is read here rather than bound to `isPresented`, so
+            // SwiftUI resetting the flag on dismiss cannot clear it out from
+            // under this handler.
+            let kind = importKind
+            importKind = nil
+            switch kind {
+            case .model: handleModelImport(result)
+            case .labels(let id): handleLabelImport(result, target: id)
+            case nil: break
+            }
         }
         .sheet(item: $inspecting) { model in
             ModelDetailView(model: model)
@@ -118,6 +128,21 @@ struct ModelLibraryView: View {
         }
     }
 
+    /// Which types the shared picker offers, decided by what asked for it.
+    private var allowedTypes: [UTType] {
+        switch importKind {
+        case .labels: UTType.labelSelectable
+        case .model, nil: UTType.coreMLSelectable
+        }
+    }
+
+    /// Sets the target first, then presents, so `allowedTypes` is already
+    /// correct for this flow by the time the picker appears.
+    private func beginImport(_ kind: ImportKind) {
+        importKind = kind
+        showsImporter = true
+    }
+
     private func handleModelImport(_ result: Result<[URL], Error>) {
         guard case .success(let urls) = result, let url = urls.first else {
             if case .failure(let error) = result { importError = error.localizedDescription }
@@ -134,9 +159,7 @@ struct ModelLibraryView: View {
         }
     }
 
-    private func handleLabelImport(_ result: Result<[URL], Error>) {
-        guard let target = labelTargetID else { return }
-        labelTargetID = nil
+    private func handleLabelImport(_ result: Result<[URL], Error>, target: UUID) {
         guard case .success(let urls) = result, let url = urls.first else {
             if case .failure(let error) = result { importError = error.localizedDescription }
             return

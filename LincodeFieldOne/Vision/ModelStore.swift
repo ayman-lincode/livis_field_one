@@ -388,7 +388,33 @@ final class ModelStore {
 }
 
 extension UTType {
-    static let coreMLModel = UTType(filenameExtension: "mlmodel") ?? .data
-    static let coreMLPackage = UTType(filenameExtension: "mlpackage") ?? .data
-    static let coreMLCompiled = UTType(filenameExtension: "mlmodelc") ?? .data
+    /// Core ML's own type identifiers, declared as imported types in Info.plist.
+    ///
+    /// Two initialisers are deliberately avoided here:
+    ///
+    /// - `UTType(filenameExtension:)`, because when no installed app declares
+    ///   the extension it returns a *dynamic* `dyn.*` type rather than nil, so
+    ///   a `?? .data` fallback never fires - and a dynamic type matches no real
+    ///   file, leaving every model greyed out and unselectable in the picker.
+    /// - `UTType(importedAs:)`, because it is non-failable and traps when the
+    ///   identifier cannot be resolved. These are `static let`s evaluated
+    ///   lazily on first access, so a trap would take the app down the moment
+    ///   the Models tab was opened.
+    static let coreMLModel = UTType("com.apple.coreml.model") ?? .data
+    static let coreMLPackage = UTType("com.apple.coreml.mlpackage") ?? .package
+    static let coreMLCompiled = UTType("com.apple.coreml.mlmodelc") ?? .package
+
+    /// Everything the model picker should let the operator select. `.folder` is
+    /// present because a `.mlmodelc` is a plain directory: without it the
+    /// picker offers only to browse into one, never to choose it.
+    static var coreMLSelectable: [UTType] {
+        [.coreMLModel, .coreMLPackage, .coreMLCompiled, .package, .folder]
+    }
+
+    /// Label files: one class per line, a JSON array/object, or an Ultralytics
+    /// `data.yaml`. `.data` is the backstop for a `.names` file, which carries
+    /// no declared type of its own.
+    static var labelSelectable: [UTType] {
+        [.plainText, .json, .yaml, .text, .data]
+    }
 }
