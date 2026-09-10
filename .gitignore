@@ -1,0 +1,6 @@
+.build/
+.spm/
+Tools/Verify/verify
+*.xcuserdatad
+xcuserdata/
+.DS_Store
