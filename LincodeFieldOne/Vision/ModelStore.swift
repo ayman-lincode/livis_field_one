@@ -13,7 +13,7 @@ enum ModelError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .unsupportedFile(let name):
-            "\(name) is not a Core ML model. Import a .mlmodel, .mlpackage or .mlmodelc."
+            "\(name) is not a Core ML model. Import a .mlmodel, .mlpackage or .mlmodelc, or a .zip of one."
         case .compileFailed(let detail):
             "Core ML could not compile that model. \(detail)"
         case .loadFailed(let detail):
@@ -97,6 +97,8 @@ final class ModelStore {
     private(set) var models: [StoredModel] = []
     private(set) var selectedModelID: UUID?
     private(set) var isImporting = false
+    /// What the import is doing right now, for the progress row.
+    private(set) var importStage: String?
     var lastError: String?
 
     var selectedModel: StoredModel? {
@@ -160,36 +162,39 @@ final class ModelStore {
     // MARK: - Import
 
     /// Compiles and stores a `.mlmodel`, `.mlpackage` or `.mlmodelc` chosen by
-    /// the operator. Security-scoped access is handled here because the picker
-    /// hands back a URL outside the app container.
+    /// the operator, or a zip or folder holding one. Security-scoped access is
+    /// handled here because the picker hands back a URL outside the app container.
     func importModel(from source: URL) async throws -> StoredModel {
         isImporting = true
-        defer { isImporting = false }
+        defer {
+            isImporting = false
+            importStage = nil
+        }
 
         let scoped = source.startAccessingSecurityScopedResource()
         defer { if scoped { source.stopAccessingSecurityScopedResource() } }
 
         let filename = source.lastPathComponent
-        let ext = source.pathExtension.lowercased()
-        guard ["mlmodel", "mlpackage", "mlmodelc"].contains(ext) else {
-            throw ModelError.unsupportedFile(filename)
-        }
 
         // Stage into the container first: compilation cannot read an
         // iCloud/Files URL reliably once the scope is released.
         let staging = FileManager.default.temporaryDirectory
             .appendingPathComponent("import-\(UUID().uuidString)", isDirectory: true)
-        try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: staging) }
-        let staged = staging.appendingPathComponent(filename)
-        try FileManager.default.copyItem(at: source, to: staged)
+
+        importStage = ModelArchive.isZip(source) ? "Unzipping \(filename)" : "Copying \(filename)"
+        let prepared = try await Task.detached(priority: .userInitiated) {
+            try ModelArchive.prepareImport(from: source, in: staging)
+        }.value
 
         let compiled: URL
-        if ext == "mlmodelc" {
-            compiled = staged
+        if prepared.format.needsCompiling {
+            importStage = "Compiling \(prepared.displayName)"
+            compiled = try await Self.compile(prepared.modelURL)
         } else {
-            compiled = try await Self.compile(staged)
+            compiled = prepared.modelURL
         }
+        importStage = "Reading model outputs"
 
         let model = try MLModel(contentsOf: compiled)
         let summary = Self.summarise(model)
@@ -208,12 +213,17 @@ final class ModelStore {
             try FileManager.default.removeItem(at: destination)
         }
         try FileManager.default.copyItem(at: compiled, to: destination)
-        if ext != "mlmodelc" { try? FileManager.default.removeItem(at: compiled) }
+        if prepared.format.needsCompiling { try? FileManager.default.removeItem(at: compiled) }
 
-        let labels = Self.labels(from: model, expectedCount: Self.classCount(from: summary))
+        // Class names the model carries win; a label file zipped alongside
+        // the model is used when the model has none.
+        let modelLabels = Self.labels(from: model, expectedCount: Self.classCount(from: summary))
+        let labels = modelLabels.origin == .placeholder
+            ? (prepared.bundledLabels ?? modelLabels)
+            : modelLabels
         let stored = StoredModel(
             id: id,
-            displayName: source.deletingPathExtension().lastPathComponent,
+            displayName: prepared.displayName,
             originalFilename: filename,
             importedAt: Date(),
             byteSize: Self.size(of: destination),
@@ -405,10 +415,12 @@ extension UTType {
     static let coreMLCompiled = UTType("com.apple.coreml.mlmodelc") ?? .package
 
     /// Everything the model picker should let the operator select. `.folder` is
-    /// present because a `.mlmodelc` is a plain directory: without it the
-    /// picker offers only to browse into one, never to choose it.
+    /// present because a `.mlmodelc` is a plain directory, and because an
+    /// unzipped package often arrives as a folder named `best.mlpackage (1)`:
+    /// without it the picker offers only to browse into one, never to choose
+    /// it. `.zip` lets a zipped model be imported without unpacking it first.
     static var coreMLSelectable: [UTType] {
-        [.coreMLModel, .coreMLPackage, .coreMLCompiled, .package, .folder]
+        [.zip, .coreMLModel, .coreMLPackage, .coreMLCompiled, .package, .folder]
     }
 
     /// Label files: one class per line, a JSON array/object, or an Ultralytics

@@ -162,6 +162,7 @@ struct Verify {
         check(dark.count == 3, "the other three quadrants report dark", "got \(dark.count)")
 
         await CapturePathChecks.run()
+        await ModelArchiveChecks.run()
         report()
     }
 

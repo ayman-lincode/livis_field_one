@@ -38,6 +38,10 @@ struct ModelLibraryView: View {
 
             ScrollView {
                 VStack(spacing: Space.s05) {
+                    if store.isImporting {
+                        ImportProgressRow(stage: store.importStage)
+                    }
+
                     if let importError {
                         CarbonInlineNotification(
                             kind: .error,
@@ -51,7 +55,7 @@ struct ModelLibraryView: View {
                         CarbonEmptyState(
                             systemImage: "cube.transparent",
                             title: "No models yet",
-                            message: "Import a .mlmodel, .mlpackage or .mlmodelc object detector. "
+                            message: "Import a .mlmodel, .mlpackage or .mlmodelc object detector, or a .zip of one. "
                                 + "Class names come from the model when it carries them, or from a "
                                 + "label file you add afterwards.",
                             actionTitle: "Import a model",
@@ -109,7 +113,10 @@ struct ModelLibraryView: View {
                     FormatLine(
                         title: "Models",
                         detail: ".mlmodel and .mlpackage are compiled on import. "
-                            + "Already-compiled .mlmodelc is used as is."
+                            + "Already-compiled .mlmodelc is used as is. A .zip of any of them is "
+                            + "unpacked first, including zips that hold a package's contents with "
+                            + "no .mlpackage folder. A label file zipped beside the model is used "
+                            + "when the model carries no class names."
                     )
                     FormatLine(
                         title: "Detector heads",
@@ -174,6 +181,34 @@ struct ModelLibraryView: View {
         } catch {
             importError = error.localizedDescription
         }
+    }
+}
+
+/// Shown while a model is being unpacked and compiled, which can take a while
+/// for a large package.
+private struct ImportProgressRow: View {
+    let stage: String?
+
+    var body: some View {
+        HStack(spacing: Space.s04) {
+            ProgressView().tint(Carbon.textPrimary)
+            VStack(alignment: .leading, spacing: Space.s01) {
+                Text("Importing model")
+                    .font(CarbonType.headingCompact01())
+                    .foregroundStyle(Carbon.textPrimary)
+                Text(stage ?? "Preparing")
+                    .font(CarbonType.helperText01())
+                    .foregroundStyle(Carbon.textHelper)
+                    .lineLimit(1)
+            }
+            Spacer()
+        }
+        .padding(Space.s05)
+        .background(Carbon.layer01)
+        .overlay(alignment: .leading) {
+            Rectangle().fill(Carbon.supportInfo).frame(width: 3)
+        }
+        .overlay(Rectangle().strokeBorder(Carbon.borderSubtle00, lineWidth: 1))
     }
 }
 

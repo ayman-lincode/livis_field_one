@@ -46,11 +46,37 @@ The app reads four detector output shapes without being told which is which:
 Boxes in pixel units of the model input are detected and rescaled to 0...1.
 Non-maximum suppression runs per class.
 
+### Importing a model
+
+Pick any of these from **Models > Import**:
+
+| You pick | What happens |
+| --- | --- |
+| `.mlpackage` or `.mlmodel` | Compiled on the device |
+| `.mlmodelc` | Used as is |
+| `.zip` of any of the above | Unpacked in the app, then as above |
+| A folder holding a model | Searched for the one model inside |
+
+Zips exported from Python or Colab often hold a package's *contents* at the
+root, with no enclosing `.mlpackage` folder. Finder then unpacks them into a
+folder named like `best_coreml.mlpackage (1)`, which Core ML does not recognise.
+The app spots that layout by its `Manifest.json` and `Data/com.apple.CoreML`
+folder, restores the `.mlpackage` extension, and names the model `best_coreml`.
+Either the zip or that unpacked folder can be imported.
+
+The unzipper streams each file to disk, so large weight files never sit in
+memory. It handles deflated and stored entries, Zip64 and trailing data
+descriptors, and skips `__MACOSX` resource forks. It refuses password-protected
+zips, paths that climb out of the unpack folder, damaged data that fails its
+checksum, and zips that hold more than one model.
+
 ### Labels
 
 Class names are taken from the model when it carries them: a classifier's
 `classLabels`, or the `names` entry Ultralytics writes into user-defined
-metadata. Otherwise import a label file from the model row — newline text,
+metadata. A label file zipped beside the model (`labels.txt`, `classes.txt`,
+`data.yaml`, `labels.json` or a `.names` file) is used when the model carries
+none. Otherwise import a label file from the model row — newline text,
 a JSON array, a JSON index-to-name object, or the `names:` block of an
 Ultralytics `data.yaml`.
 
@@ -139,6 +165,16 @@ rescaling, per-class NMS, and a full compile-and-predict round trip. For the
 camera-photo path it decodes a 4216x2376 JPEG with and without EXIF rotation,
 runs the app's own `Detector` on the full still with stretch and letterbox
 fitting, and confirms capture records from earlier builds still load.
+
+For model import it builds zips in every shape the importer must handle and
+runs each result through the detector: contents at the root, a Finder zip with
+`__MACOSX`, stored entries, Zip64, data descriptors, and an unzipped folder with
+a duplicate name. It also confirms zip-slip paths, two-model zips and damaged
+data are refused. Point it at your own zip to import and run that too:
+
+```bash
+MODEL_ZIP="/path/to/best_coreml.mlpackage.zip" ./Tools/Verify/run.sh
+```
 
 `Tools/SampleModel/QuadrantSmokeTest.mlpackage` is a small deterministic
 detector used by those checks and useful on device: it reports one box per
