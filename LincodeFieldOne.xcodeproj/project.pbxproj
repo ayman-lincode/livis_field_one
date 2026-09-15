@@ -117,7 +117,7 @@
 			mainGroup = A100000000000000000020;
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
-				A100000000000000000060 /* XCLocalSwiftPackageReference "../ENDLESSRIVER-FIELD-ONE-iOS-SDK-1.1.0-CLIENT/FieldOneSDK" */,
+				A100000000000000000060 /* XCLocalSwiftPackageReference "../ENDLESSRIVER-FIELD-ONE-iOS-SDK-1.3.0-CLIENT/FieldOneSDK" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = A100000000000000000021 /* Products */;
@@ -295,9 +295,9 @@
 /* End XCConfigurationList section */
 
 /* Begin XCLocalSwiftPackageReference section */
-		A100000000000000000060 /* XCLocalSwiftPackageReference "../ENDLESSRIVER-FIELD-ONE-iOS-SDK-1.1.0-CLIENT/FieldOneSDK" */ = {
+		A100000000000000000060 /* XCLocalSwiftPackageReference "../ENDLESSRIVER-FIELD-ONE-iOS-SDK-1.3.0-CLIENT/FieldOneSDK" */ = {
 			isa = XCLocalSwiftPackageReference;
-			relativePath = "../ENDLESSRIVER-FIELD-ONE-iOS-SDK-1.1.0-CLIENT/FieldOneSDK";
+			relativePath = "../ENDLESSRIVER-FIELD-ONE-iOS-SDK-1.3.0-CLIENT/FieldOneSDK";
 		};
 /* End XCLocalSwiftPackageReference section */
 

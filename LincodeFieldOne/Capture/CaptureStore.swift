@@ -1,61 +1,15 @@
 import Foundation
+import ImageIO
 import Photos
 import UIKit
+import UniformTypeIdentifiers
 
-/// One saved inspection frame plus what the model said about it.
-struct CaptureRecord: Identifiable, Codable, Equatable {
-    let id: UUID
-    var capturedAt: Date
-    var sourceKind: FrameSourceKind
-    var modelName: String
-    var modelID: UUID?
-    var frameWidth: Int
-    var frameHeight: Int
-    var detections: [StoredDetection]
-    var note: String?
-    /// True when the pixels came from a closed camera recording rather than the
-    /// live stream. The SDK requires this distinction to be preserved.
-    var isRecoveredRecordingFrame: Bool
-
-    struct StoredDetection: Codable, Equatable {
-        var label: String
-        var classIndex: Int
-        var confidence: Float
-        var x: Double
-        var y: Double
-        var width: Double
-        var height: Double
-
-        init(_ detection: Detection) {
-            label = detection.label
-            classIndex = detection.classIndex
-            confidence = detection.confidence
-            x = detection.rect.minX
-            y = detection.rect.minY
-            width = detection.rect.width
-            height = detection.rect.height
-        }
-
-        var detection: Detection {
-            Detection(
-                classIndex: classIndex,
-                label: label,
-                confidence: confidence,
-                rect: CGRect(x: x, y: y, width: width, height: height)
-            )
-        }
-    }
-
-    var summary: String {
-        guard !detections.isEmpty else { return "No detections" }
-        let counts = Dictionary(grouping: detections, by: \.label)
-            .map { "\($0.value.count) \($0.key)" }
-            .sorted()
-        return counts.joined(separator: ", ")
-    }
-}
-
-/// Saves annotated frames into the app container and lists them back.
+/// Saves captured frames into the app container and lists them back.
+///
+/// Each capture is three files: the annotated JPEG with boxes burnt in, the
+/// original image, and a JSON record. A FIELD ONE camera photo's original is
+/// the camera's own JPEG bytes, written unmodified. Full camera photos run to
+/// 12 MP, so every on-screen image is a cached downsample, never a full decode.
 @MainActor
 @Observable
 final class CaptureStore {
@@ -63,11 +17,16 @@ final class CaptureStore {
     var lastError: String?
 
     private let root: URL
+    @ObservationIgnored private let imageCache = NSCache<NSString, UIImage>()
+
+    nonisolated static let thumbnailPixels = 360
+    nonisolated static let displayPixels = 2400
 
     init() {
         let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
         root = documents.appendingPathComponent("Captures", isDirectory: true)
         try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        imageCache.totalCostLimit = 160 * 1024 * 1024
         reload()
     }
 
@@ -79,7 +38,7 @@ final class CaptureStore {
         root.appendingPathComponent("\(id.uuidString)-original.jpg")
     }
 
-    private func recordURL(for id: UUID) -> URL {
+    func recordURL(for id: UUID) -> URL {
         root.appendingPathComponent("\(id.uuidString).json")
     }
 
@@ -98,17 +57,20 @@ final class CaptureStore {
             .sorted { $0.capturedAt > $1.capturedAt }
     }
 
+    /// Writes a capture to disk. Encoding a 12 MP JPEG takes a noticeable
+    /// fraction of a second, so the files are produced off the main actor.
     @discardableResult
     func save(
-        frame: CGImage,
+        still: CapturedStill,
         annotated: UIImage,
         detections: [Detection],
         sourceKind: FrameSourceKind,
         modelName: String,
         modelID: UUID?,
-        isRecoveredRecordingFrame: Bool = false,
-        note: String? = nil
-    ) throws -> CaptureRecord {
+        inferenceMilliseconds: Double?
+    ) async throws -> CaptureRecord {
+        guard let pixels = still.frame.makeCGImage() else { throw CaptureError.noFrame }
+
         let id = UUID()
         let record = CaptureRecord(
             id: id,
@@ -116,26 +78,37 @@ final class CaptureStore {
             sourceKind: sourceKind,
             modelName: modelName,
             modelID: modelID,
-            frameWidth: frame.width,
-            frameHeight: frame.height,
+            frameWidth: pixels.width,
+            frameHeight: pixels.height,
             detections: detections.map(CaptureRecord.StoredDetection.init),
-            note: note,
-            isRecoveredRecordingFrame: isRecoveredRecordingFrame
+            provenance: still.provenance,
+            camera: still.camera,
+            inferenceMilliseconds: inferenceMilliseconds
         )
 
-        guard let annotatedData = annotated.jpegData(compressionQuality: 0.92) else {
-            throw CaptureError.encodingFailed
-        }
-        try annotatedData.write(to: annotatedURL(for: id), options: .atomic)
+        let annotatedURL = annotatedURL(for: id)
+        let originalURL = originalURL(for: id)
+        let recordURL = recordURL(for: id)
+        let encodedJPEG = still.encodedJPEG
 
-        if let originalData = UIImage(cgImage: frame).jpegData(compressionQuality: 0.92) {
-            try? originalData.write(to: originalURL(for: id), options: .atomic)
-        }
+        try await Task.detached(priority: .userInitiated) {
+            guard let annotatedData = annotated.jpegData(compressionQuality: 0.9) else {
+                throw CaptureError.encodingFailed
+            }
+            try annotatedData.write(to: annotatedURL, options: .atomic)
 
-        let encoder = JSONEncoder()
-        encoder.dateEncodingStrategy = .iso8601
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        try encoder.encode(record).write(to: recordURL(for: id), options: .atomic)
+            if let encodedJPEG {
+                // Evidence: the camera's bytes exactly as delivered.
+                try encodedJPEG.write(to: originalURL, options: .atomic)
+            } else {
+                try Self.writeJPEG(pixels, to: originalURL, quality: 0.92)
+            }
+
+            let encoder = JSONEncoder()
+            encoder.dateEncodingStrategy = .iso8601
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            try encoder.encode(record).write(to: recordURL, options: .atomic)
+        }.value
 
         captures.insert(record, at: 0)
         return record
@@ -145,6 +118,11 @@ final class CaptureStore {
         try? FileManager.default.removeItem(at: annotatedURL(for: id))
         try? FileManager.default.removeItem(at: originalURL(for: id))
         try? FileManager.default.removeItem(at: recordURL(for: id))
+        for annotated in [true, false] {
+            for pixels in [Self.thumbnailPixels, Self.displayPixels] {
+                imageCache.removeObject(forKey: cacheKey(id, annotated, pixels))
+            }
+        }
         captures.removeAll { $0.id == id }
     }
 
@@ -152,35 +130,57 @@ final class CaptureStore {
         for capture in captures { delete(capture.id) }
     }
 
-    func image(for id: UUID, annotated: Bool = true) -> UIImage? {
-        UIImage(contentsOfFile: (annotated ? annotatedURL(for: id) : originalURL(for: id)).path)
+    /// A small image for grids and the live view's last-capture button.
+    func thumbnail(for id: UUID, annotated: Bool = true) -> UIImage? {
+        image(for: id, annotated: annotated, maxPixelSize: Self.thumbnailPixels)
     }
 
-    /// Adds the annotated frame to the operator's photo library. Asks for
-    /// add-only access, which is the narrowest permission that works.
-    func exportToPhotoLibrary(_ id: UUID) async throws {
+    /// A screen-sized image. Never the full-resolution decode.
+    func image(for id: UUID, annotated: Bool = true, maxPixelSize: Int = CaptureStore.displayPixels) -> UIImage? {
+        let key = cacheKey(id, annotated, maxPixelSize)
+        if let cached = imageCache.object(forKey: key) { return cached }
+        let url = annotated ? annotatedURL(for: id) : originalURL(for: id)
+        guard let cgImage = StillImageDecoder.downsampledImage(at: url, maxPixelSize: maxPixelSize) else {
+            return nil
+        }
+        let image = UIImage(cgImage: cgImage)
+        imageCache.setObject(image, forKey: key, cost: cgImage.bytesPerRow * cgImage.height)
+        return image
+    }
+
+    private func cacheKey(_ id: UUID, _ annotated: Bool, _ pixels: Int) -> NSString {
+        "\(id.uuidString)-\(annotated ? "a" : "o")-\(pixels)" as NSString
+    }
+
+    /// Adds a capture to the operator's photo library. Asks for add-only
+    /// access, the narrowest permission that works.
+    func exportToPhotoLibrary(_ id: UUID, annotated: Bool = true) async throws {
         let status = await PHPhotoLibrary.requestAuthorization(for: .addOnly)
         guard status == .authorized || status == .limited else {
             throw CaptureError.photoLibraryDenied
         }
-        let url = annotatedURL(for: id)
+        let url = annotated ? annotatedURL(for: id) : originalURL(for: id)
         try await PHPhotoLibrary.shared().performChanges {
             PHAssetCreationRequest.forAsset().addResource(with: .photo, fileURL: url, options: nil)
         }
     }
 
-    /// Writes every capture and its sidecar into one folder for AirDrop or Files.
+    /// Writes every capture, its original and its record into one folder.
     func exportBundle() throws -> URL {
         let folder = FileManager.default.temporaryDirectory
             .appendingPathComponent("FIELD-ONE-captures-\(Int(Date().timeIntervalSince1970))", isDirectory: true)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let formatter = ISO8601DateFormatter()
         for capture in captures {
-            let stamp = ISO8601DateFormatter().string(from: capture.capturedAt)
-                .replacingOccurrences(of: ":", with: "-")
+            let stamp = formatter.string(from: capture.capturedAt).replacingOccurrences(of: ":", with: "-")
             let name = "\(stamp)-\(capture.id.uuidString.prefix(8))"
             try? FileManager.default.copyItem(
                 at: annotatedURL(for: capture.id),
-                to: folder.appendingPathComponent("\(name).jpg")
+                to: folder.appendingPathComponent("\(name)-annotated.jpg")
+            )
+            try? FileManager.default.copyItem(
+                at: originalURL(for: capture.id),
+                to: folder.appendingPathComponent("\(name)-original.jpg")
             )
             try? FileManager.default.copyItem(
                 at: recordURL(for: capture.id),
@@ -188,6 +188,16 @@ final class CaptureStore {
             )
         }
         return folder
+    }
+
+    nonisolated private static func writeJPEG(_ image: CGImage, to url: URL, quality: Double) throws {
+        guard let destination = CGImageDestinationCreateWithURL(
+            url as CFURL, UTType.jpeg.identifier as CFString, 1, nil
+        ) else { throw CaptureError.encodingFailed }
+        CGImageDestinationAddImage(destination, image, [
+            kCGImageDestinationLossyCompressionQuality: quality
+        ] as CFDictionary)
+        guard CGImageDestinationFinalize(destination) else { throw CaptureError.encodingFailed }
     }
 }
 

@@ -60,6 +60,15 @@ struct GalleryView: View {
         .sheet(item: $selected) { capture in
             CaptureDetailView(capture: capture)
         }
+        .task {
+            #if DEBUG
+            // `-reviewLatestCapture` opens the newest capture, so the review
+            // screen can be screenshotted without touch input.
+            if ProcessInfo.processInfo.arguments.contains("-reviewLatestCapture") {
+                selected = store.captures.first
+            }
+            #endif
+        }
         .sheet(isPresented: Binding(
             get: { exportURL != nil },
             set: { if !$0 { exportURL = nil } }
@@ -90,19 +99,36 @@ private struct CaptureThumbnail: View {
     var body: some View {
         Button(action: action) {
             ZStack(alignment: .bottomLeading) {
-                if let image = store.image(for: capture.id) {
-                    Image(uiImage: image)
-                        .resizable()
-                        .scaledToFill()
-                } else {
-                    Carbon.layer02
-                }
+                // The grid column sets the cell size; the image fills inside
+                // it, so a wide camera photo cannot push the cell wider.
+                Color.clear
+                    .overlay {
+                        if let image = store.thumbnail(for: capture.id) {
+                            Image(uiImage: image)
+                                .resizable()
+                                .scaledToFill()
+                        } else {
+                            Carbon.layer02
+                        }
+                    }
+                    .clipped()
 
                 LinearGradient(
                     colors: [.clear, Carbon.background.opacity(0.9)],
                     startPoint: .center,
                     endPoint: .bottom
                 )
+
+                if capture.provenance == .cameraPhoto, let camera = capture.camera {
+                    VStack {
+                        HStack {
+                            Spacer()
+                            CarbonTag(text: camera.megapixelsText, kind: .gray)
+                                .padding(Space.s03)
+                        }
+                        Spacer()
+                    }
+                }
 
                 VStack(alignment: .leading, spacing: Space.s01) {
                     Text(capture.capturedAt.formatted(date: .omitted, time: .standard))

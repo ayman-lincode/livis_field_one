@@ -235,19 +235,25 @@ struct DeviceView: View {
         CarbonTile(layer: Carbon.layer02) {
             VStack(alignment: .leading, spacing: Space.s03) {
                 CarbonSectionHeader(title: "Capture boundary")
-                Text(
-                    "The shutter saves the current live frame at "
-                    + "\(FieldOneProduct.videoWidth) x \(FieldOneProduct.videoHeight). "
-                    + "A \(FieldOneProduct.recordingWidth) x \(FieldOneProduct.recordingHeight) "
-                    + "still can only be pulled from a closed recording on the card, and is not "
-                    + "a present-moment shutter. This app labels those separately so a recovered "
-                    + "frame is never presented as live evidence."
-                )
+                Text(photoBoundaryText)
                 .font(CarbonType.helperText01())
                 .foregroundStyle(Carbon.textSecondary)
                 .fixedSize(horizontal: false, vertical: true)
             }
         }
+    }
+
+    private var photoBoundaryText: String {
+        let live = "\(FieldOneProduct.videoWidth) x \(FieldOneProduct.videoHeight)"
+        if let reason = source?.photoUnavailableReason {
+            return "Camera photos are unavailable: \(reason) Until that changes the shutter "
+                + "saves the current live frame at \(live), labelled as a live frame."
+        }
+        return "The shutter asks the camera for its own JPEG, at the image size set on the "
+            + "camera, and runs the model on that full-resolution still. The original bytes are "
+            + "kept unmodified. A photo cannot be taken while the camera is recording. Frames "
+            + "recovered from closed recordings are labelled separately and never presented "
+            + "as a camera photo."
     }
 
     // MARK: - Loading

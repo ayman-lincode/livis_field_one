@@ -4,7 +4,7 @@ An iOS app that puts a Core ML object detector over the live video from an
 **ENDLESSRIVER FIELD ONE** wearable inspection camera, and saves the frame the
 operator captures with the boxes burnt into it.
 
-Built on the ENDLESSRIVER FIELD ONE iOS SDK 1.1.0 client package that sits
+Built on the ENDLESSRIVER FIELD ONE iOS SDK **1.3.0** client package that sits
 beside this folder. Styled with IBM Carbon (Gray 100 theme) and the Lincode
 brand mark.
 
@@ -56,14 +56,35 @@ Ultralytics `data.yaml`.
 
 ### Capture
 
-The shutter takes a fresh full-quality still, runs the model over exactly those
-pixels, then writes three things:
+On FIELD ONE the shutter takes a **camera photo**, not a frame of the video:
 
-- the annotated JPEG, with boxes, labels and an optional metadata footer
-- the unannotated original JPEG
-- a JSON record of every detection, in normalised coordinates
+1. The SDK's `captureHighQualityNow(output: .bytes, preview:)` stops the preview,
+   switches the camera to still mode, restarts the preview and fires the shutter.
+   The app passes the retained preview-lifecycle adapter, as the SDK requires.
+2. The camera's JPEG comes back as its original bytes, at whatever image size is
+   set on the camera. The SDK validation record measured 3840x2160; the vendor
+   trace reported 4216x2376. The app reads the size from the photo itself.
+3. The JPEG is decoded upright at full resolution and the model runs on that
+   whole still. Live inference pauses while this happens.
+4. The result opens straight away: the photo with its boxes, zoomable, with the
+   detections and the camera's metadata underneath.
 
-so the saved evidence and the saved measurements always agree.
+Each capture is saved as three files:
+
+- the camera's original JPEG, byte for byte
+- an annotated JPEG, with boxes, labels and an optional metadata footer
+- a JSON record of every detection in normalised coordinates, the provenance,
+  and the camera's file name, handle, JPEG size and shutter-to-download time
+
+The shutter reads **PHOTO** when a camera photo will be taken. It reads **FRAME**
+when it can only save the live 1280x720 frame: no usable card, firmware that does
+not advertise `presentMomentCameraJPEG`, or camera control not responding. That
+fallback is labelled as a live frame everywhere it appears.
+
+Photo failures follow the SDK's guidance. A photo during camera recording shows
+"Stop recording to take an image." A timed-out or interrupted photo warns that
+the camera may already have saved it, and the app never fires a second shutter
+on its own. A camera cooldown blocks the shutter until it expires.
 
 ---
 
@@ -89,7 +110,7 @@ Opening the project in Xcode instead resolves into Xcode's own DerivedData, so
 that first open downloads VLCKit again. Both `.spm` and `.build` are ignored by
 git and safe to delete.
 
-Minimum iOS 17. Camera work needs a physical iPhone: the simulator has no
+Minimum iOS 17; SDK 1.3.0 itself needs iOS 16. Camera work needs a physical iPhone: the simulator has no
 camera and cannot reach the FIELD ONE Wi-Fi.
 
 ### First run with the camera
@@ -114,7 +135,10 @@ runs them against both hand-built tensors and a real compiled Core ML model:
 
 It checks label parsing in every accepted format, layout detection for the YOLO
 v5 and v8 tensor shapes, centre-form to corner-form box conversion, pixel-unit
-rescaling, per-class NMS, and a full compile-and-predict round trip.
+rescaling, per-class NMS, and a full compile-and-predict round trip. For the
+camera-photo path it decodes a 4216x2376 JPEG with and without EXIF rotation,
+runs the app's own `Detector` on the full still with stretch and letterbox
+fitting, and confirms capture records from earlier builds still load.
 
 `Tools/SampleModel/QuadrantSmokeTest.mlpackage` is a small deterministic
 detector used by those checks and useful on device: it reports one box per
@@ -123,8 +147,9 @@ so pointing the camera at a lamp lights up a predictable box. Import it from
 **Models**, and `Tools/SampleModel/labels.txt` if you want to exercise the
 label-import path. `make_quadrant_smoke_test.py` rebuilds it.
 
-Debug builds accept `-startTab <live|models|captures|device|settings>` so each
-screen can be screenshotted without touch input.
+Debug builds accept `-startTab <live|models|captures|device|settings>`, and
+`-reviewLatestCapture` alongside `-startTab captures`, so each screen can be
+screenshotted without touch input.
 
 ---
 
@@ -137,12 +162,13 @@ reduced-width snapshot on a timer and feeds that to the model. Expect roughly
 the iPhone camera where real pixel buffers are available. Video playback itself
 is unaffected and stays at the stream's own rate.
 
-**Capture resolution.** The shutter saves the current live frame at 1280x720,
-which is what stock FIELD ONE firmware offers. A 3840x2160 still can only be
-recovered from a *closed* recording on the camera's card and is not a
-present-moment shutter. The app keeps that distinction in the capture record
-and on screen, as the SDK requires. Immediate camera-quality JPEG is gated on
-firmware advertising `presentMomentCameraJPEG`, which stock firmware does not.
+**Camera photo hardware status.** The SDK 1.3.0 validation record lists the
+final hardware retest of bytes output as still open. Its earlier phone run of the
+same capture sequence produced decodable 3840x2160 JPEGs in 1.7 to 3.9 seconds.
+Treat the first on-device photos from this app as that acceptance check.
+
+**Provenance.** Camera photos, live preview frames and frames recovered from
+closed recordings are recorded and labelled separately, as the SDK requires.
 
 **Box alignment.** If boxes look offset or squashed, the model was probably
 trained with a different input fitting. Change **How the frame is fed to the

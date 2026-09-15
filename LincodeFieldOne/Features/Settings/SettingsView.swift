@@ -202,9 +202,9 @@ struct SettingsView: View {
                 CarbonDataRow(key: "Design system", value: "IBM Carbon, Gray 100", monospaced: false)
 
                 Text(
-                    "Capture on stock firmware saves the current live frame. A high-resolution "
-                    + "still can only be recovered from a closed camera recording, and the app "
-                    + "labels those as recovered rather than live."
+                    "On FIELD ONE the shutter takes a camera JPEG through the SDK and runs the "
+                    + "model on the full-resolution still. When the camera cannot take photos, "
+                    + "the live frame is saved instead and labelled as such."
                 )
                 .font(CarbonType.helperText01())
                 .foregroundStyle(Carbon.textHelper)

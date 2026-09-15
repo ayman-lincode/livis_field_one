@@ -77,7 +77,20 @@ final class DeviceCameraFrameSource: NSObject, FrameSource {
         state = .idle
     }
 
-    func captureStill() async throws -> VideoFrame {
+    /// The iPhone camera path saves the next preview buffer; it has no
+    /// separate photo pipeline.
+    var capturesCameraPhotos: Bool { false }
+
+    func captureStill(
+        progress: @escaping @Sendable @MainActor (CaptureProgress) -> Void
+    ) async throws -> CapturedStill {
+        let frame = try await nextStill()
+        return CapturedStill(
+            frame: frame, provenance: .livePreviewFrame, encodedJPEG: nil, camera: nil
+        )
+    }
+
+    private func nextStill() async throws -> VideoFrame {
         guard state.isStreaming else { throw FrameSourceError.notStreaming }
         guard pendingStill == nil else { throw FrameSourceError.stillUnavailable }
 

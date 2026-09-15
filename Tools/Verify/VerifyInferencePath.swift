@@ -161,6 +161,7 @@ struct Verify {
         let dark = real.filter { $0.label == "dark" }
         check(dark.count == 3, "the other three quadrants report dark", "got \(dark.count)")
 
+        await CapturePathChecks.run()
         report()
     }
 

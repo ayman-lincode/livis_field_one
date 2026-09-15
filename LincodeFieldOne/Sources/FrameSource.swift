@@ -4,80 +4,6 @@ import CoreVideo
 import Foundation
 import UIKit
 
-/// One decoded video frame handed to the inference pipeline.
-///
-/// Sources deliver whichever representation they own natively: AVFoundation
-/// gives pixel buffers, the FIELD ONE VLC tap gives `CGImage`s. Vision accepts
-/// both, and the capture compositor converts on demand.
-struct VideoFrame {
-    enum Image {
-        case pixelBuffer(CVPixelBuffer)
-        case cgImage(CGImage)
-    }
-
-    let image: Image
-    /// Pixel dimensions of `image`, before any orientation is applied.
-    let size: CGSize
-    let orientation: CGImagePropertyOrientation
-    let capturedAt: CFTimeInterval
-
-    /// Dimensions as displayed, after `orientation` is applied.
-    var displaySize: CGSize {
-        switch orientation {
-        case .left, .leftMirrored, .right, .rightMirrored:
-            CGSize(width: size.height, height: size.width)
-        default:
-            size
-        }
-    }
-
-    func makeCGImage() -> CGImage? {
-        switch image {
-        case .cgImage(let cgImage):
-            return cgImage
-        case .pixelBuffer(let buffer):
-            let ciImage = CIImage(cvPixelBuffer: buffer)
-            return SharedCIContext.shared.createCGImage(ciImage, from: ciImage.extent)
-        }
-    }
-}
-
-enum SharedCIContext {
-    static let shared = CIContext(options: [.useSoftwareRenderer: false])
-}
-
-/// Where live video comes from.
-enum FrameSourceKind: String, CaseIterable, Identifiable, Codable {
-    /// ENDLESSRIVER FIELD ONE over Wi-Fi, through the client SDK.
-    case fieldOne
-    /// This iPhone's own camera. Used for bench testing a model when the
-    /// FIELD ONE hardware is not to hand.
-    case deviceCamera
-
-    var id: String { rawValue }
-
-    var title: String {
-        switch self {
-        case .fieldOne: "FIELD ONE"
-        case .deviceCamera: "This iPhone"
-        }
-    }
-
-    var subtitle: String {
-        switch self {
-        case .fieldOne: "ENDLESSRIVER wearable camera over Wi-Fi"
-        case .deviceCamera: "Built-in camera, for bench testing a model"
-        }
-    }
-
-    var systemImage: String {
-        switch self {
-        case .fieldOne: "wave.3.right.circle"
-        case .deviceCamera: "iphone.gen3.camera"
-        }
-    }
-}
-
 /// Lifecycle of a frame source, mapped to operator-facing wording.
 enum SourceState: Equatable {
     case idle
@@ -120,8 +46,37 @@ protocol FrameSource: AnyObject {
     /// Frames per second at which `onFrame` is delivered. Sources may clamp.
     var samplingRate: Double { get set }
 
+    /// Whether `captureStill` currently produces a camera photo rather than a
+    /// frame lifted from the live stream.
+    var capturesCameraPhotos: Bool { get }
+
     /// A full-quality still of the present moment, for the capture action.
-    func captureStill() async throws -> VideoFrame
+    /// `progress` reports download bytes when the source has to fetch them.
+    func captureStill(
+        progress: @escaping @Sendable @MainActor (CaptureProgress) -> Void
+    ) async throws -> CapturedStill
+}
+
+/// Stages of a capture, for the operator-facing progress overlay.
+enum CaptureProgress: Equatable {
+    case takingPhoto
+    case downloading(received: UInt64, total: UInt64)
+
+    var title: String {
+        switch self {
+        case .takingPhoto:
+            "Taking photo"
+        case .downloading(let received, let total):
+            total > 0
+                ? "Downloading \(Int(Double(received) / Double(total) * 100))%"
+                : "Downloading"
+        }
+    }
+
+    var fraction: Double? {
+        guard case .downloading(let received, let total) = self, total > 0 else { return nil }
+        return min(1, Double(received) / Double(total))
+    }
 }
 
 enum FrameSourceError: LocalizedError {

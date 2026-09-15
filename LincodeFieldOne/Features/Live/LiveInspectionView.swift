@@ -47,6 +47,11 @@ struct LiveInspectionView: View {
                     }
                 }
 
+                if let stage = model.captureStage {
+                    CaptureProgressOverlay(stage: stage)
+                        .transition(.opacity)
+                }
+
                 if let banner = model.banner {
                     VStack {
                         Spacer()
@@ -70,6 +75,12 @@ struct LiveInspectionView: View {
         }
         .background(Carbon.background)
         .animation(CarbonMotion.expressive, value: model.banner)
+        .animation(CarbonMotion.productive, value: model.captureStage)
+        .fullScreenCover(item: $model.reviewCapture) { capture in
+            CaptureDetailView(capture: capture, isFreshCapture: true)
+                .environment(captureStore)
+                .environment(settings)
+        }
         .animation(CarbonMotion.productive, value: showsDetectionList)
         .task { await model.start() }
         .onChange(of: scenePhase) { _, phase in
@@ -307,6 +318,7 @@ struct LiveInspectionView: View {
                 CarbonIconButton(
                     systemImage: model.sourceKind.systemImage,
                     accessibilityLabel: "Change video source",
+                    isEnabled: !model.isCapturing,
                     isSelected: false
                 ) { showsSourcePicker = true }
 
@@ -318,9 +330,11 @@ struct LiveInspectionView: View {
 
                 Spacer(minLength: 0)
 
-                ShutterButton(isBusy: model.isCapturing, isEnabled: model.state.isStreaming) {
-                    Task { await model.capture() }
-                }
+                ShutterButton(
+                    isBusy: model.isCapturing,
+                    isEnabled: model.state.isStreaming,
+                    mode: model.shutterMode
+                ) { model.capture() }
 
                 Spacer(minLength: 0)
 
@@ -344,7 +358,7 @@ struct LiveInspectionView: View {
     private var lastCaptureThumbnail: some View {
         Group {
             if let capture = model.lastCapture ?? captureStore.captures.first,
-               let image = captureStore.image(for: capture.id) {
+               let image = captureStore.thumbnail(for: capture.id) {
                 Image(uiImage: image)
                     .resizable()
                     .scaledToFill()
@@ -390,6 +404,7 @@ private struct TelemetryRow: View {
 private struct ShutterButton: View {
     let isBusy: Bool
     let isEnabled: Bool
+    let mode: LiveViewModel.ShutterMode
     let action: () -> Void
 
     @State private var isPressed = false
@@ -409,6 +424,14 @@ private struct ShutterButton: View {
             }
             .contentShape(Circle())
         }
+        .overlay(alignment: .bottom) {
+            Text(caption)
+                .font(.system(size: 9, weight: .semibold))
+                .tracking(0.8)
+                .foregroundStyle(mode == .cameraPhoto ? Carbon.textPrimary : Carbon.textHelper)
+                .fixedSize()
+                .offset(y: 13)
+        }
         .buttonStyle(.plain)
         .disabled(!isEnabled || isBusy)
         .simultaneousGesture(
@@ -417,6 +440,55 @@ private struct ShutterButton: View {
                 .onEnded { _ in isPressed = false }
         )
         .animation(CarbonMotion.productive, value: isPressed)
-        .accessibilityLabel("Capture frame")
+        .accessibilityLabel(mode == .cameraPhoto ? "Take camera photo" : "Capture live frame")
+    }
+
+    private var caption: String {
+        switch mode {
+        case .cameraPhoto: "PHOTO"
+        case .liveFrame: "FRAME"
+        case .unavailable: ""
+        }
+    }
+}
+
+/// Full-bleed status while the camera takes, downloads and analyses a still.
+private struct CaptureProgressOverlay: View {
+    let stage: LiveViewModel.CaptureStage
+
+    var body: some View {
+        VStack(spacing: Space.s05) {
+            Spacer()
+            VStack(alignment: .leading, spacing: Space.s04) {
+                HStack(spacing: Space.s04) {
+                    ProgressView().tint(Carbon.textPrimary)
+                    Text(stage.title)
+                        .font(CarbonType.heading02())
+                        .foregroundStyle(Carbon.textPrimary)
+                        .contentTransition(.numericText())
+                }
+                GeometryReader { geometry in
+                    ZStack(alignment: .leading) {
+                        Rectangle().fill(Carbon.layer03).frame(height: 2)
+                        Rectangle()
+                            .fill(LincodeBrand.red)
+                            .frame(width: geometry.size.width * (stage.fraction ?? 0), height: 2)
+                    }
+                }
+                .frame(height: 2)
+                .opacity(stage.fraction == nil ? 0 : 1)
+                Text("Keep the camera steady. The shutter will not fire twice.")
+                    .font(CarbonType.helperText01())
+                    .foregroundStyle(Carbon.textHelper)
+            }
+            .padding(Space.s05)
+            .frame(maxWidth: 420)
+            .background(Carbon.layer01)
+            .overlay(Rectangle().strokeBorder(Carbon.borderSubtle01, lineWidth: 1))
+            .padding(Space.s05)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Carbon.background.opacity(0.55))
+        .allowsHitTesting(true)
     }
 }
